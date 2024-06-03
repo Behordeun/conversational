@@ -1,6 +1,5 @@
 import time
-from flask import Flask, jsonify, request
-from redis import Redis
+from flask import Flask, jsonify
 from task import process_question
 from random import randint
 from flask_caching import Cache
