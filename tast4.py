@@ -1,8 +1,6 @@
 import os
 import re
 import ast
-import time
-import logging
 from dotenv import load_dotenv
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
@@ -19,22 +17,6 @@ import tracemalloc
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.agent_toolkits.sql.base import create_sql_agent
 from celery import Celery
-from tenacity import retry, wait_exponential, stop_after_attempt
-
-# Create logs directory if it doesn't exist
-if not os.path.exists('logs'):
-    os.makedirs('logs')
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[
-        logging.FileHandler("logs/app.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 # Start tracking memory usage
 tracemalloc.start()
@@ -44,9 +26,7 @@ load_dotenv()
 
 # Initialize Flask caching
 app = Flask(__name__)
-app.config['CACHE_TYPE'] = 'redis'
-app.config['CACHE_REDIS_HOST'] = os.getenv('REDIS_HOST')
-app.config['CACHE_REDIS_PORT'] = os.getenv('REDIS_PORT')
+app.config['CACHE_TYPE'] = 'simple'
 cache = Cache(app)
 
 # Celery configuration
@@ -75,9 +55,9 @@ database_uri = f'postgresql://{username}:{password}@{host}:{port}/{database}'
 # Try to connect to the database
 try:
     db = SQLDatabase.from_uri(database_uri)
-    logger.info("Database connection successful!")
+    print("Database connection successful!")
 except Exception as e:
-    logger.error(f"Error connecting to the database: {e}")
+    print(f"Error connecting to the database: {e}")
 
 # Define example questions and their corresponding SQL queries
 examples = [
@@ -125,30 +105,13 @@ queries = [
 results = []
 # Run the sample queries and clean the results
 for query in queries:
-    try:
-        res = db.run(query)
-        res = [el for sub in ast.literal_eval(res) for el in sub if el]
-        res = [re.sub(r"\b\d+\b", "", string).strip() for string in res]
-        results.extend(res)
-        logger.info(f"Query {query} executed successfully")
-    except Exception as e:
-        logger.error(f"Error executing query {query}: {e}")
-
-# Backoff strategy for OpenAI API call
-@retry(wait=wait_exponential(multiplier=1, min=4, max=60), stop=stop_after_attempt(6))
-def call_openai_with_backoff(llm, input_data):
-    return llm.invoke(input_data)
+    res = db.run(query)
+    res = [el for sub in ast.literal_eval(res) for el in sub if el]
+    res = [re.sub(r"\b\d+\b", "", string).strip() for string in res]
+    results.extend(res)
 
 @celery.task
 def process_question(question):
-    cache_key = f"response_{question}"
-    cached_response = cache.get(cache_key)
-
-    if cached_response:
-        logger.info(f"Cache hit for question: {question}")
-        return cached_response
-
-    logger.info(f"Processing question: {question}")
     llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 
     # Create a vector database and a retriever tool
@@ -193,28 +156,20 @@ def process_question(question):
     )
 
     # Invoke the agent to process the question and return the response
-    try:
-        res = call_openai_with_backoff(agent, {"input": question})
-        for action, _ in res["intermediate_steps"]:
-            for message in action.message_log:
-                if message.content.strip():
-                    logger.info(message.content)
+    res = agent.invoke({"input": question})
+    for action, _ in res["intermediate_steps"]:
+        for message in action.message_log:
+            if message.content.strip():
+                print(message.content)
 
-        response = res['output']
-        cache.set(cache_key, response)
-        logger.info(f"Response cached for question: {question}")
-    except Exception as e:
-        logger.error(f"Error processing question {question}: {e}")
-        response = f"An error occurred: {e}"
-
-    logger.info(f"Response for question '{question}': {response}")
-    return response
+    print(res['output'])
+    return res['output']
 
 # Stop tracing memory allocations and display top memory-consuming lines
 snapshot = tracemalloc.take_snapshot()
 top_stats = snapshot.statistics('lineno')
 for stat in top_stats[:10]:
-    logger.info(stat)
+    print(stat)
 
 # To ensure Flask app runs only when executed directly
 if __name__ == '__main__':
@@ -224,9 +179,9 @@ if __name__ == '__main__':
 snapshot = tracemalloc.take_snapshot()
 top_stats = snapshot.statistics('lineno')
 
-logger.info("[ Top 10 memory consuming lines ]")
+print("[ Top 10 memory consuming lines ]")
 for stat in top_stats[:10]:
-    logger.info(stat)
+    print(stat)
 
 # Stop tracing memory allocations
 tracemalloc.stop()
